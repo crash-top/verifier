@@ -37,8 +37,15 @@ failed and what was expected instead; nothing is hidden and nothing is corrected
 The values below come from a small illustrative chain, not from a live round, so the link opens a
 complete, working report you can look at before you try a real one:
 
-<https://crash-top.github.io/verifier/#round=10523&hash=7f67379dca657c6abf6210ada0d41ef70ece5c0ffdde07141e56aa13abb96643&seed=195602707f3fb0fbe99b39b6f5687c14764f7930b93aa9df4c1cfa43f2724d34&salt=2ecdbc05dfc2be7fe3fa23bd8ef09bdbd36af90b7e0fb3a3a47a22c059524d51&terminal=9586accd110b15f80aeb260139a666fec1487a5674310bc5bc253029353d75a8&result=1.66>
+---
 
+Verifier Endpoint : `https://crash-top.github.io/verifier/#`
+  
+   *Endpoint* : [See](https://crash-top.github.io/verifier/#round=10523&hash=7f67379dca657c6abf6210ada0d41ef70ece5c0ffdde07141e56aa13abb96643&seed=195602707f3fb0fbe99b39b6f5687c14764f7930b93aa9df4c1cfa43f2724d34&salt=2ecdbc05dfc2be7fe3fa23bd8ef09bdbd36af90b7e0fb3a3a47a22c059524d51&terminal=9586accd110b15f80aeb260139a666fec1487a5674310bc5bc253029353d75a8&result=1.66)
+  
+```url
+   https://crash-top.github.io/verifier/#round=10523&hash=7f67379dca657c6abf6210ada0d41ef70ece5c0ffdde07141e56aa13abb96643&seed=195602707f3fb0fbe99b39b6f5687c14764f7930b93aa9df4c1cfa43f2724d34&salt=2ecdbc05dfc2be7fe3fa23bd8ef09bdbd36af90b7e0fb3a3a47a22c059524d51&terminal=9586accd110b15f80aeb260139a666fec1487a5674310bc5bc253029353d75a8&result=1.66
+```
 Everything after `#` stays in the browser. The fragment is never sent to the server, so the round
 hash, the seed and the salt never appear in any access log.
 
@@ -64,7 +71,7 @@ seed of round `n - 1`.
 
 The chain is built downwards from a random top seed:
 
-```
+```javascript
 seed[j-1] = SHA-256(seed[j])            terminal = SHA-256(seed[0])
 hash[j]   = SHA-256(seed[j]) = seed[j-1]
 X         = int(HMAC-SHA256(salt, seed[j])[0..52 bits], 16) / 2^52
@@ -97,7 +104,7 @@ block yourself; it never queries an explorer API.
 
 `chains.js` holds public chain commitments only:
 
-```js
+```javascript
 self.CT_CHAINS = [
   {
     id: 206,
@@ -115,7 +122,7 @@ No seed, no per-round record, no player data. It is generated from the game's pu
 `/api/fair/chain`, `/api/history?limit=1` and `/api/fair/round/:id` — which need no credential and
 expose no unfinished round:
 
-```
+```bash
 node tools/export.mjs
 ```
 
@@ -123,7 +130,7 @@ The tool merges by chain id, so an older chain keeps its first round and stays v
 leaves the live window. `https://crashtop.com` is the default origin; `--base` and `--limit` exist
 only for a staging copy:
 
-```
+```bash
 node tools/export.mjs --base https://crashtop.com --limit 20
 ```
 
@@ -132,7 +139,7 @@ and the publish workflow runs it before the artifact is uploaded.
 
 ## Run it locally
 
-```
+```bash
 node --test                     # the full suite
 node tools/check-public.mjs     # the publish guard
 ```
