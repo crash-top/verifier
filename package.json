@@ -1,0 +1,17 @@
+{
+  "name": "crashtop-verifier",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Static hash-chain verifier for CrashTop rounds",
+  "homepage": "https://crash-top.github.io/verifier/",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/crashtop-official/verifier.git"
+  },
+  "license": "MIT",
+  "scripts": {
+    "test": "node --test",
+    "check": "node tools/check-public.mjs",
+    "export": "node tools/export.mjs"
+  }
+}
