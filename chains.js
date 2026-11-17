@@ -91,5 +91,14 @@ self.CT_CHAINS = [
     "length": 5000,
     "committedAt": "2026-11-04T11:48:43.894Z",
     "firstRound": null
+  },
+  {
+    "id": 212,
+    "terminalHash": "6def266c51c0ad5de65c3fdc77c8fadb73ada1138ff12ac94cf7383d7a8bd496",
+    "salt": "00000000000000000001cffd2cb83f0d4c2dad5a26c9ab29a6ae67809e34bf74",
+    "saltHeight": 976208,
+    "length": 30000,
+    "committedAt": "2026-11-17T02:29:12.126Z",
+    "firstRound": 60001
   }
 ];
