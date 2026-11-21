@@ -1,13 +1,27 @@
-# Publishes the static verifier to GitHub Pages.
+# Publishes the static verifier to GitHub Pages and keeps chains.js current.
+#
+# Three ways in:
+#   push to main      a human change is tested and deployed;
+#   workflow_dispatch a manual publish;
+#   schedule          every six hours the public chain list is refreshed from the game.
+#
+# chains.js is written by tools/export.mjs. A push made with GITHUB_TOKEN does not trigger
+# another workflow, so the refresh, the commit and the deployment all happen in this run:
+# nothing is left waiting for an event that will never arrive.
 name: Deploy verifier to GitHub Pages
 
 on:
   push:
     branches: [main]
   workflow_dispatch:
+  schedule:
+    # Every six hours, on the hour (UTC). A new commitment is picked up within six hours.
+    - cron: '0 */6 * * *'
 
 permissions:
-  contents: read
+  # contents: write lets this run commit the refreshed chains.js back to main;
+  # pages/id-token are what actions/deploy-pages needs to publish the artifact.
+  contents: write
   pages: write
   id-token: write
 
@@ -20,27 +34,117 @@ defaults:
   run:
     shell: bash
 
+env:
+  # The game this verifier publishes commitments for. Read-only, unauthenticated endpoints.
+  CRASHTOP_BASE: https://crashtop.com
+
 jobs:
   build:
-    name: Test and assemble the site
+    name: Refresh, test and assemble the site
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
     steps:
       - name: Check out the repository
         uses: actions/checkout@v4
+        with:
+          # Full history: this run can push a commit and, if main moved meanwhile, has to be
+          # able to rebase onto it. A shallow clone cannot update a branch reliably.
+          fetch-depth: 0
 
       - name: Set up Node
         uses: actions/setup-node@v4
         with:
           node-version: '22'
 
-      - name: Test the verifier math
-        run: node --test
+      # The site sits behind a WAF that can lock an IP for a short while and answer 403 on
+      # every request. A scheduled or manual run treats that as "nothing to refresh today"
+      # and publishes the chain list that is already committed instead of failing; a run
+      # started by a push still fails loudly, because that one is expected to be seen.
+      - name: Refresh the public chain list
+        id: refresh
+        env:
+          EVENT: ${{ github.event_name }}
+        run: |
+          set -euo pipefail
+          tolerant=no
+          case "$EVENT" in
+            schedule|workflow_dispatch) tolerant=yes ;;
+          esac
+
+          # --retry prints one status line per attempt, so only the last one is the verdict.
+          code=$(curl -sS -o /dev/null -w '%{http_code}\n' --max-time 20 --retry 2 --retry-delay 3 \
+            -H 'accept: application/json' "$CRASHTOP_BASE/api/fair/chain" 2>/dev/null | tail -n 1 || true)
+          code=${code:-000}
+          echo "GET $CRASHTOP_BASE/api/fair/chain -> $code"
+
+          if [ "$code" = "403" ]; then
+            if [ "$tolerant" = "yes" ]; then
+              echo "::warning::crashtop.com answered 403 (temporary WAF lock); skipping the refresh and publishing the committed chains.js"
+              echo "refreshed=false" >> "$GITHUB_OUTPUT"
+              echo "status=waf-403" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            echo "::error::crashtop.com answered 403 on a $EVENT run"
+            exit 1
+          fi
+          if [ "${code:0:1}" != "2" ]; then
+            echo "::error::crashtop.com answered HTTP $code for /api/fair/chain"
+            exit 1
+          fi
+
+          # A 403 can also arrive between the probe and the export. The generator writes
+          # nothing until every read has succeeded, so the committed file is still intact.
+          if ! output=$(node tools/export.mjs --base "$CRASHTOP_BASE" 2>&1); then
+            printf '%s\n' "$output"
+            if [ "$tolerant" = "yes" ] && printf '%s' "$output" | grep -q 'HTTP 403'; then
+              echo "::warning::the export hit a 403 mid-run; keeping the committed chains.js"
+              echo "refreshed=false" >> "$GITHUB_OUTPUT"
+              echo "status=waf-403" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            exit 1
+          fi
+          printf '%s\n' "$output"
+
+          # Content comparison, not `git status`: a Windows checkout with autocrlf reports a
+          # line-ending-only difference as modified, which would commit an unchanged file.
+          if git diff --quiet -- chains.js; then
+            echo "refreshed=false" >> "$GITHUB_OUTPUT"
+            echo "status=unchanged" >> "$GITHUB_OUTPUT"
+          else
+            echo "refreshed=true" >> "$GITHUB_OUTPUT"
+            echo "status=changed" >> "$GITHUB_OUTPUT"
+            git --no-pager diff --stat -- chains.js
+          fi
 
       # chains.js is written by tools/export.mjs and served to everyone. A generator bug or
       # a hand edit that leaks a seed stops the deployment here instead of publishing it.
       - name: Refuse to publish a seed
         run: node tools/check-public.mjs
+
+      - name: Test the verifier math
+        run: node --test
+
+      # GITHUB_TOKEN commits do not trigger workflows, so the freshly generated chains.js is
+      # committed and then deployed by this same run rather than by a follow-up event.
+      - name: Commit the refreshed chain list
+        if: steps.refresh.outputs.refreshed == 'true' && github.ref == 'refs/heads/main'
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add chains.js
+          git commit -m 'chore(chains): refresh the public chain commitments'
+          for attempt in 1 2 3; do
+            if git push origin HEAD:main; then
+              echo "pushed the refreshed chains.js"
+              exit 0
+            fi
+            echo "push rejected on attempt $attempt; rebasing onto origin/main"
+            git pull --rebase --autostash origin main
+          done
+          echo "::error::the refreshed chains.js could not be pushed"
+          exit 1
 
       - name: Assemble the site
         run: |
@@ -62,9 +166,12 @@ jobs:
 
       - name: Record the deployed origin
         run: |
-          echo "Verifier URL: ${{ steps.pages.outputs.base_url }}/" >> "$GITHUB_STEP_SUMMARY"
-          echo "Game setting: FAIR_VERIFIER_URL=${{ steps.pages.outputs.base_url }}" >> "$GITHUB_STEP_SUMMARY"
-          echo "Verify locally first: node tools/check-public.mjs" >> "$GITHUB_STEP_SUMMARY"
+          {
+            echo "Chain list: ${{ steps.refresh.outputs.status }}"
+            echo "Verifier URL: ${{ steps.pages.outputs.base_url }}/"
+            echo "Game setting: FAIR_VERIFIER_URL=${{ steps.pages.outputs.base_url }}"
+            echo "Verify locally first: node tools/check-public.mjs"
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload the artifact
         uses: actions/upload-pages-artifact@v3
@@ -74,7 +181,8 @@ jobs:
   deploy:
     name: Deploy
     needs: build
-    # A manual run from a feature branch tests the build; only main publishes.
+    # A manual run from a feature branch tests the build; only main publishes. Scheduled
+    # runs check out the default branch, so they deploy the just-committed chains.js.
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 10
