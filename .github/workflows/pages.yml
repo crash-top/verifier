@@ -1,13 +1,4 @@
 # Publishes the static verifier to GitHub Pages and keeps chains.js current.
-#
-# Three ways in:
-#   push to main      a human change is tested and deployed;
-#   workflow_dispatch a manual publish;
-#   schedule          every six hours the public chain list is refreshed from the game.
-#
-# chains.js is written by tools/export.mjs. A push made with GITHUB_TOKEN does not trigger
-# another workflow, so the refresh, the commit and the deployment all happen in this run:
-# nothing is left waiting for an event that will never arrive.
 name: Deploy verifier to GitHub Pages
 
 on:
@@ -19,13 +10,10 @@ on:
     - cron: '0 */6 * * *'
 
 permissions:
-  # contents: write lets this run commit the refreshed chains.js back to main;
-  # pages/id-token are what actions/deploy-pages needs to publish the artifact.
   contents: write
   pages: write
   id-token: write
 
-# One deployment at a time; a queued run waits instead of cancelling a publish in flight.
 concurrency:
   group: pages
   cancel-in-progress: false
@@ -35,7 +23,6 @@ defaults:
     shell: bash
 
 env:
-  # The game this verifier publishes commitments for. Read-only, unauthenticated endpoints.
   CRASHTOP_BASE: https://crashtop.com
 
 jobs:
@@ -47,8 +34,6 @@ jobs:
       - name: Check out the repository
         uses: actions/checkout@v4
         with:
-          # Full history: this run can push a commit and, if main moved meanwhile, has to be
-          # able to rebase onto it. A shallow clone cannot update a branch reliably.
           fetch-depth: 0
 
       - name: Set up Node
@@ -56,47 +41,30 @@ jobs:
         with:
           node-version: '22'
 
-      # The site sits behind a WAF that can lock an IP for a short while and answer 403 on
-      # every request. A scheduled or manual run treats that as "nothing to refresh today"
-      # and publishes the chain list that is already committed instead of failing; a run
-      # started by a push still fails loudly, because that one is expected to be seen.
       - name: Refresh the public chain list
         id: refresh
-        env:
-          EVENT: ${{ github.event_name }}
         run: |
           set -euo pipefail
-          tolerant=no
-          case "$EVENT" in
-            schedule|workflow_dispatch) tolerant=yes ;;
-          esac
 
-          # --retry prints one status line per attempt, so only the last one is the verdict.
           code=$(curl -sS -o /dev/null -w '%{http_code}\n' --max-time 20 --retry 2 --retry-delay 3 \
             -H 'accept: application/json' "$CRASHTOP_BASE/api/fair/chain" 2>/dev/null | tail -n 1 || true)
           code=${code:-000}
           echo "GET $CRASHTOP_BASE/api/fair/chain -> $code"
 
           if [ "$code" = "403" ]; then
-            if [ "$tolerant" = "yes" ]; then
-              echo "::warning::crashtop.com answered 403 (temporary WAF lock); skipping the refresh and publishing the committed chains.js"
-              echo "refreshed=false" >> "$GITHUB_OUTPUT"
-              echo "status=waf-403" >> "$GITHUB_OUTPUT"
-              exit 0
-            fi
-            echo "::error::crashtop.com answered 403 on a $EVENT run"
-            exit 1
+            echo "::warning::crashtop.com answered 403 (pre-launch/WAF lock); skipping the refresh and publishing the committed chains.js"
+            echo "refreshed=false" >> "$GITHUB_OUTPUT"
+            echo "status=waf-403" >> "$GITHUB_OUTPUT"
+            exit 0
           fi
           if [ "${code:0:1}" != "2" ]; then
             echo "::error::crashtop.com answered HTTP $code for /api/fair/chain"
             exit 1
           fi
 
-          # A 403 can also arrive between the probe and the export. The generator writes
-          # nothing until every read has succeeded, so the committed file is still intact.
           if ! output=$(node tools/export.mjs --base "$CRASHTOP_BASE" 2>&1); then
             printf '%s\n' "$output"
-            if [ "$tolerant" = "yes" ] && printf '%s' "$output" | grep -q 'HTTP 403'; then
+            if printf '%s' "$output" | grep -q 'HTTP 403'; then
               echo "::warning::the export hit a 403 mid-run; keeping the committed chains.js"
               echo "refreshed=false" >> "$GITHUB_OUTPUT"
               echo "status=waf-403" >> "$GITHUB_OUTPUT"
@@ -106,8 +74,6 @@ jobs:
           fi
           printf '%s\n' "$output"
 
-          # Content comparison, not `git status`: a Windows checkout with autocrlf reports a
-          # line-ending-only difference as modified, which would commit an unchanged file.
           if git diff --quiet -- chains.js; then
             echo "refreshed=false" >> "$GITHUB_OUTPUT"
             echo "status=unchanged" >> "$GITHUB_OUTPUT"
@@ -117,16 +83,12 @@ jobs:
             git --no-pager diff --stat -- chains.js
           fi
 
-      # chains.js is written by tools/export.mjs and served to everyone. A generator bug or
-      # a hand edit that leaks a seed stops the deployment here instead of publishing it.
       - name: Refuse to publish a seed
         run: node tools/check-public.mjs
 
       - name: Test the verifier math
         run: node --test
 
-      # GITHUB_TOKEN commits do not trigger workflows, so the freshly generated chains.js is
-      # committed and then deployed by this same run rather than by a follow-up event.
       - name: Commit the refreshed chain list
         if: steps.refresh.outputs.refreshed == 'true' && github.ref == 'refs/heads/main'
         run: |
@@ -155,8 +117,6 @@ jobs:
             test -f "$file" || { echo "missing $file" >&2; exit 1; }
             cp "$file" _site/
           done
-          # Actions deployments skip Jekyll, but the marker keeps a branch-based deploy
-          # working too if the source is ever switched back.
           : > _site/.nojekyll
           echo "Site contents:" && ls -la _site
 
@@ -181,8 +141,6 @@ jobs:
   deploy:
     name: Deploy
     needs: build
-    # A manual run from a feature branch tests the build; only main publishes. Scheduled
-    # runs check out the default branch, so they deploy the just-committed chains.js.
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 10
