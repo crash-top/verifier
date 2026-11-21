@@ -74,6 +74,16 @@ function iso(value) {
   return Number.isNaN(date.getTime()) ? null : date.toISOString();
 }
 
+/* A round id is a positive integer or it is unknown. This has to test for absence first:
+ * `Number(null)` and `Number('')` are both 0, so a conversion-first check turns a stored
+ * `firstRound: null` into 0 on the next refresh, and check-public.mjs then refuses to
+ * publish the file ("firstRound is not a positive round id"). */
+function roundNumber(value) {
+  if (value == null || value === '') return null;
+  const number = Number(value);
+  return Number.isSafeInteger(number) && number >= 1 ? number : null;
+}
+
 function readExisting(file) {
   if (!fs.existsSync(file)) return [];
   const body = fs.readFileSync(file, 'utf8');
@@ -135,9 +145,9 @@ for (const chain of commitments) {
     saltHeight: Number.isSafeInteger(Number(chain.salt_height)) ? Number(chain.salt_height) : null,
     length: Number.isSafeInteger(Number(chain.length)) ? Number(chain.length) : null,
     committedAt: iso(chain.committed_at) || previous.committedAt || null,
-    firstRound: Number.isSafeInteger(Number(previous.firstRound))
-      ? Number(previous.firstRound)
-      : (firstRound.get(id) ?? null)
+    /* A start already recorded stays; otherwise the live lookup fills it in; otherwise it
+     * stays unknown. It is never rewritten as 0. */
+    firstRound: roundNumber(previous.firstRound) ?? roundNumber(firstRound.get(id))
   });
   written += 1;
 }
